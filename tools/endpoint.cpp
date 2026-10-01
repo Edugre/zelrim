@@ -57,7 +57,21 @@ int main(int argc, char** argv) {
         while (!InterlockedCompareExchange(&stopping, 0, 0) &&
                (!seconds || GetTickCount64() - start < std::uint64_t(seconds) * 1000)) {
             const auto status = bridge.connect() ? bridge.tick() : zelrim::Status{};
-#ifndef ZELRIM_SKYRIM_SIDE
+#ifdef ZELRIM_SKYRIM_SIDE
+            if (status.snapshot.skyrimPid) {
+                zelrim::SkyrimTelemetryInput sample{};
+                sample.validity = zelrim::protocol::kSkyrimContextPlayable |
+                    zelrim::protocol::kSkyrimPlayerPresent | zelrim::protocol::kSkyrimCellPresent;
+                sample.invalidationReason = zelrim::protocol::SkyrimInvalidationReason::None;
+                const auto pattern = static_cast<std::uint32_t>(GetTickCount64() / 16);
+                sample.playerFormId = 0x14; sample.cellFormId = 0x1000;
+                sample.worldspaceFormId = 0x3C;
+                sample.positionX = static_cast<float>(pattern);
+                sample.positionY = sample.positionX + 10.0f; sample.positionZ = sample.positionX + 20.0f;
+                sample.rotationX = 0.1f; sample.rotationY = 0.2f; sample.rotationZ = 0.3f;
+                bridge.publishSkyrimTelemetry(sample);
+            }
+#else
             if (status.snapshot.ootPid) {
                 zelrim::TelemetryInput sample{};
                 sample.validity = zelrim::protocol::kContextPlayable | zelrim::protocol::kPlayerPresent;
@@ -84,6 +98,9 @@ int main(int argc, char** argv) {
                 std::cout << "telemetry=" << telemetryName(status.telemetry)
                           << " sequence=" << status.snapshot.link.sequence
                           << " ageMs=" << status.telemetryAgeMs << std::endl;
+                std::cout << "skyrimTelemetry=" << telemetryName(status.skyrimTelemetry)
+                          << " sequence=" << status.snapshot.skyrim.sequence
+                          << " ageMs=" << status.skyrimTelemetryAgeMs << std::endl;
                 previous = status.peer;
                 first = false;
             }

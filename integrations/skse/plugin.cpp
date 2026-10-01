@@ -1,12 +1,42 @@
 #include "integrations/skse/api.h"
+#include "integrations/skse/world_telemetry.h"
 #include "bridge/bridge.h"
+#include "skse64/GameAPI.h"
+#include "skse64/GameForms.h"
+#include "skse64/GameMenus.h"
+#include "skse64/GameReferences.h"
 #include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <memory>
 #include <new>
+#include <set>
+#include <string>
+
+// The pinned header declares these wrappers, but the plugin deliberately links
+// only the small subset of SKSE implementation files it needs.
+IMenu* MenuManager::GetMenu(BSFixedString* menuName) {
+    if (!menuName->data) return nullptr;
+    MenuTableItem* item = menuTable.Find(menuName);
+    return item ? item->menuInstance : nullptr;
+}
 
 namespace {
+class PauseTracker final : public BSTEventSink<MenuOpenCloseEvent> {
+public:
+    EventResult ReceiveEvent(MenuOpenCloseEvent* event, EventDispatcher<MenuOpenCloseEvent>*) override {
+        if (!event || !event->menuName.data) return kEvent_Continue;
+        const std::string name(event->menuName.data);
+        if (!event->opening) { pausingMenus_.erase(name); return kEvent_Continue; }
+        auto* manager = MenuManager::GetSingleton();
+        auto* menu = manager ? manager->GetMenu(&event->menuName) : nullptr;
+        if (menu && (menu->flags & IMenu::kFlag_PausesGame)) pausingMenus_.insert(name);
+        return kEvent_Continue;
+    }
+    bool paused() const noexcept { return !pausingMenus_.empty(); }
+private:
+    std::set<std::string> pausingMenus_;
+};
 // Process-lifetime storage: no thread joins or C++ destructors under loader lock.
 struct State {
     const SKSETaskInterface* tasks = nullptr;
@@ -21,6 +51,13 @@ struct State {
     zelrim::TelemetryState previousTelemetry = zelrim::TelemetryState::Unavailable;
     std::uint8_t previousSession[16]{};
     std::uint64_t lastTelemetryLogMs = 0;
+    zelrim::skse::WorldTelemetryState worldState;
+    PauseTracker pauseTracker;
+    bool pauseEventsRegistered = false;
+    zelrim::TelemetryState previousSkyrimTelemetry = zelrim::TelemetryState::Unavailable;
+    std::uint8_t previousSkyrimSession[16]{};
+    std::uint64_t lastSkyrimTelemetryLogMs = 0;
+    bool testMode = false;
     bool started = false;
 };
 State* state = nullptr;
@@ -56,7 +93,26 @@ public:
         if (!state->active.load()) return;
         try {
             if (!state->bridge) state->bridge = std::make_unique<zelrim::Bridge>(zelrim::Side::Skyrim);
-            const auto status = state->bridge->connect() ? state->bridge->tick() : zelrim::Status{};
+            zelrim::Status status{};
+            if (state->bridge->connect()) {
+                zelrim::skse::WorldSample source{};
+                auto* player = state->testMode ? nullptr : *g_thePlayer;
+                source.playerPresent = player != nullptr;
+                if (player) {
+                    source.playerFormId = player->formID;
+                    source.positionX = player->pos.x; source.positionY = player->pos.y; source.positionZ = player->pos.z;
+                    source.rotationX = player->rot.x; source.rotationY = player->rot.y; source.rotationZ = player->rot.z;
+                    auto* cell = player->parentCell;
+                    source.cellPresent = cell != nullptr;
+                    if (cell) {
+                        source.cellFormId = cell->formID;
+                        source.worldspaceFormId = cell->worldSpace ? cell->worldSpace->formID : 0;
+                    }
+                }
+                state->bridge->publishSkyrimTelemetry(
+                    state->worldState.capture(source, state->pauseTracker.paused()));
+                status = state->bridge->tick();
+            }
             if (!state->reported || status.peer != state->previous || status.snapshot.ootPid != state->previousPid) {
                 char message[256];
                 std::snprintf(message, sizeof(message),
@@ -93,6 +149,28 @@ public:
                 state->previousTelemetry = status.telemetry;
                 state->lastTelemetryLogMs = now;
             }
+            const auto& s = status.snapshot.skyrim;
+            const bool skyrimSessionChanged = std::memcmp(state->previousSkyrimSession, s.sessionId, 16) != 0;
+            const bool skyrimTransition = skyrimSessionChanged ||
+                status.skyrimTelemetry != state->previousSkyrimTelemetry;
+            if (skyrimTransition || (status.skyrimTelemetry == zelrim::TelemetryState::Usable &&
+                                    now - state->lastSkyrimTelemetryLogMs >= 1000)) {
+                char session[33];
+                for (unsigned i = 0; i < 16; ++i) std::snprintf(session + i * 2, 3, "%02x", s.sessionId[i]);
+                char message[640];
+                std::snprintf(message, sizeof(message),
+                    "Zelrim skyrimTelemetry=%s session=%s sequence=%llu ageMs=%llu validity=0x%08lx reason=%lu "
+                    "player=0x%08lx cell=0x%08lx worldspace=0x%08lx pos=(%.3f,%.3f,%.3f) rot=(%.6f,%.6f,%.6f)",
+                    telemetryName(status.skyrimTelemetry), session, static_cast<unsigned long long>(s.sequence),
+                    static_cast<unsigned long long>(status.skyrimTelemetryAgeMs), static_cast<unsigned long>(s.validity),
+                    static_cast<unsigned long>(s.invalidationReason), static_cast<unsigned long>(s.playerFormId),
+                    static_cast<unsigned long>(s.cellFormId), static_cast<unsigned long>(s.worldspaceFormId),
+                    s.positionX, s.positionY, s.positionZ, s.rotationX, s.rotationY, s.rotationZ);
+                log(message);
+                std::memcpy(state->previousSkyrimSession, s.sessionId, 16);
+                state->previousSkyrimTelemetry = status.skyrimTelemetry;
+                state->lastSkyrimTelemetryLogMs = now;
+            }
         } catch (const std::exception& error) {
             log(error.what());
             log("Zelrim disabled until process restart");
@@ -116,12 +194,31 @@ void CALLBACK schedule(PTP_CALLBACK_INSTANCE, void*, PTP_TIMER) {
     state->tasks->AddTask(task);
 }
 void onMessage(SKSEMessagingInterface::Message* message) {
-    if (!message || message->type != SKSEMessagingInterface::kMessage_DataLoaded || state->started) return;
-    state->started = true;
-    state->active.store(true);
-    FILETIME due{}; // immediate, then every 250 ms
-    SetThreadpoolTimer(state->timer, &due, 250, 0);
-    log("Zelrim SKSE scheduling enabled");
+    if (!message || !state) return;
+    switch (message->type) {
+    case SKSEMessagingInterface::kMessage_PreLoadGame:
+        state->worldState.preLoad();
+        break;
+    case SKSEMessagingInterface::kMessage_PostLoadGame:
+        state->worldState.postLoad(message->data != nullptr);
+        break;
+    case SKSEMessagingInterface::kMessage_NewGame:
+        state->worldState.newGame();
+        break;
+    case SKSEMessagingInterface::kMessage_DataLoaded:
+        if (state->started) break;
+        state->started = true;
+        if (!state->testMode) if (auto* manager = MenuManager::GetSingleton()) {
+            manager->MenuOpenCloseEventDispatcher()->AddEventSink(&state->pauseTracker);
+            state->pauseEventsRegistered = true;
+        }
+        state->active.store(true);
+        { FILETIME due{}; SetThreadpoolTimer(state->timer, &due, 250, 0); }
+        log("Zelrim SKSE scheduling enabled");
+        break;
+    default:
+        break;
+    }
 }
 void openLog() {
     wchar_t path[32768];
@@ -181,6 +278,10 @@ extern "C" __declspec(dllexport) void Zelrim_Shutdown() {
 }
 extern "C" __declspec(dllexport) bool Zelrim_IsRunning() {
     return state && state->active.load();
+}
+// Test-host gate: prevents dereferencing Skyrim runtime relocations outside Skyrim.
+extern "C" __declspec(dllexport) void Zelrim_EnableTestMode() {
+    if (state && !state->started) state->testMode = true;
 }
 BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) DisableThreadLibraryCalls(module);

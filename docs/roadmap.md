@@ -37,7 +37,7 @@ Read these documents for implementation details and observed limitations:
 - [Transport foundation implementation plan](transport-foundation-plan.md)
 - [Shipwright heartbeat integration](shipwright-heartbeat.md)
 
-**Milestone 2 is implemented; real-game behavioral verification remains.** Its
+**Milestone 2 is complete.** Its
 [implementation record](milestone-02.md) and detailed
 [read-only Link telemetry plan](milestone-02-plan.md) distinguish automated/build
 evidence from the remaining in-game matrix. The milestones below continue numbering from the existing milestone files;
@@ -45,8 +45,7 @@ the earlier conversational list of next steps was not a milestone numbering sche
 
 ## Milestone 2: Read-only Link telemetry
 
-Implementation completed 2026-10-01. Do not begin milestone 3 until the real-game
-milestone-2 verification matrix is completed and recorded; see `milestone-02.md`.
+Implementation completed 2026-10-01; see `milestone-02.md`.
 
 Publish coherent OOT position, world/shape orientation, and existing state flags.
 Read them through the standalone monitor and Skyrim logs without affecting either
@@ -58,6 +57,10 @@ Completion requires matching source and consumer observations and reliable stale
 data rejection. No coordinate conversion or Skyrim movement belongs in this step.
 
 ## Milestone 3: Read-only Skyrim world telemetry
+
+Implementation completed 2026-10-01; automated validation and the pinned
+Shipwright build pass. Real Skyrim sampling and coordinate measurements remain;
+see [implementation record](milestone-03.md) and [plan](milestone-03-plan.md).
 
 Expose the Skyrim context needed by future Link integration, starting with player
 location, cell/worldspace identity, and transition state. Establish and document

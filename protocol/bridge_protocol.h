@@ -10,10 +10,11 @@ inline constexpr wchar_t kDataMutexName[] = L"Local\\Zelrim_v1_data";
 inline constexpr wchar_t kSkyrimOwnerName[] = L"Local\\Zelrim_v1_skyrim_owner";
 inline constexpr wchar_t kOotOwnerName[] = L"Local\\Zelrim_v1_oot_owner";
 inline constexpr std::uint32_t kMagic = 0x4D524C5A;
-inline constexpr std::uint32_t kVersion = 2;
+inline constexpr std::uint32_t kVersion = 3;
 inline constexpr std::uint32_t kHeaderBytes = 64;
 inline constexpr std::uint32_t kTelemetryBytes = 120;
-inline constexpr std::uint32_t kMappingBytes = kHeaderBytes + kTelemetryBytes;
+inline constexpr std::uint32_t kSkyrimTelemetryBytes = 96;
+inline constexpr std::uint32_t kMappingBytes = kHeaderBytes + kTelemetryBytes + kSkyrimTelemetryBytes;
 inline constexpr std::uint64_t kHeartbeatIntervalMs = 250;
 inline constexpr std::uint64_t kHeartbeatTimeoutMs = 3000;
 inline constexpr std::uint64_t kTelemetryFreshnessMs = 1000;
@@ -26,6 +27,17 @@ inline constexpr std::uint32_t kKnownValidity =
     kContextPlayable | kPlayerPresent | kPaused | kCutscene | kTransition;
 enum class InvalidationReason : std::uint32_t {
     None = 0, NoPlayableContext = 1, LoadingOrTransition = 2, NoPlayer = 3, Detached = 4,
+};
+enum SkyrimValidity : std::uint32_t {
+    kSkyrimContextPlayable = 1u << 0, kSkyrimPlayerPresent = 1u << 1,
+    kSkyrimCellPresent = 1u << 2, kSkyrimPaused = 1u << 3,
+    kSkyrimLoading = 1u << 4, kSkyrimTransition = 1u << 5,
+};
+inline constexpr std::uint32_t kKnownSkyrimValidity = kSkyrimContextPlayable |
+    kSkyrimPlayerPresent | kSkyrimCellPresent | kSkyrimPaused | kSkyrimLoading | kSkyrimTransition;
+enum class SkyrimInvalidationReason : std::uint32_t {
+    None = 0, NoPlayableContext = 1, Loading = 2, NoPlayer = 3, NoCell = 4,
+    CellOrWorldspaceChanged = 5, Paused = 6, Detached = 7,
 };
 
 // Markers equal sequence only after a complete publication. Invalid records zero
@@ -51,12 +63,28 @@ struct alignas(8) LinkTelemetry {
     std::uint32_t stateFlags1, stateFlags2, bgCheckFlags;
     std::uint32_t reserved1;
 };
+struct alignas(8) SkyrimTelemetry {
+    std::uint8_t sessionId[16];
+    std::uint64_t sequence;
+    std::uint64_t captureUptimeMs;
+    std::uint64_t publicationBegin;
+    std::uint64_t publicationEnd;
+    std::uint32_t validity;
+    std::uint32_t invalidationReason;
+    std::uint32_t playerFormId;
+    std::uint32_t cellFormId;
+    std::uint32_t worldspaceFormId; // zero is a valid interior/no-worldspace identity
+    float positionX, positionY, positionZ;
+    float rotationX, rotationY, rotationZ; // raw Skyrim TESObjectREFR::rot components
+    std::uint32_t reserved0;
+};
 struct alignas(8) Header {
     std::uint32_t magic, version, byteSize, reserved0;
     std::uint32_t skyrimPid, ootPid;
     std::uint64_t skyrimHeartbeatMs, ootHeartbeatMs;
     std::uint8_t reserved[24];
     LinkTelemetry link;
+    SkyrimTelemetry skyrim;
 };
 static_assert(std::endian::native == std::endian::little);
 static_assert(std::is_standard_layout_v<LinkTelemetry> && std::is_trivially_copyable_v<LinkTelemetry>);
@@ -74,10 +102,22 @@ static_assert(offsetof(LinkTelemetry, worldYaw) == 80);
 static_assert(offsetof(LinkTelemetry, velocityX) == 88);
 static_assert(offsetof(LinkTelemetry, stateFlags1) == 104);
 static_assert(offsetof(LinkTelemetry, reserved1) == 116);
+static_assert(std::is_standard_layout_v<SkyrimTelemetry> && std::is_trivially_copyable_v<SkyrimTelemetry>);
+static_assert(sizeof(SkyrimTelemetry) == kSkyrimTelemetryBytes && alignof(SkyrimTelemetry) == 8);
+static_assert(offsetof(SkyrimTelemetry, sequence) == 16);
+static_assert(offsetof(SkyrimTelemetry, captureUptimeMs) == 24);
+static_assert(offsetof(SkyrimTelemetry, publicationBegin) == 32);
+static_assert(offsetof(SkyrimTelemetry, publicationEnd) == 40);
+static_assert(offsetof(SkyrimTelemetry, validity) == 48);
+static_assert(offsetof(SkyrimTelemetry, playerFormId) == 56);
+static_assert(offsetof(SkyrimTelemetry, positionX) == 68);
+static_assert(offsetof(SkyrimTelemetry, rotationX) == 80);
+static_assert(offsetof(SkyrimTelemetry, reserved0) == 92);
 static_assert(std::is_standard_layout_v<Header> && std::is_trivially_copyable_v<Header>);
 static_assert(sizeof(Header) == kMappingBytes && alignof(Header) == 8);
 static_assert(offsetof(Header, skyrimPid) == 16);
 static_assert(offsetof(Header, skyrimHeartbeatMs) == 24);
 static_assert(offsetof(Header, reserved) == 40);
 static_assert(offsetof(Header, link) == kHeaderBytes);
+static_assert(offsetof(Header, skyrim) == kHeaderBytes + kTelemetryBytes);
 } // namespace zelrim::protocol

@@ -1,4 +1,5 @@
 #include "bridge/bridge.h"
+#include "integrations/skse/world_telemetry.h"
 #include <functional>
 #include <cstring>
 #include <iostream>
@@ -79,8 +80,8 @@ void lifecycle(zelrim::Side side, const char* peerExe, const char* ownExe) {
     std::cout << "PASS lifecycle side=" << (side == zelrim::Side::Skyrim ? "skyrim" : "oot") << '\n';
 }
 void incompatible() {
-    require(zelrim::protocol::kVersion != 1 && zelrim::protocol::kMappingBytes != 64,
-            "Protocol v2 must be rejected by a v1 version/size reader");
+    require(zelrim::protocol::kVersion == 3 && zelrim::protocol::kMappingBytes != 64,
+            "Protocol v3 must be rejected by older version/size readers");
     const auto mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
         0, zelrim::protocol::kMappingBytes, zelrim::protocol::kMappingName);
     require(mapping != nullptr && GetLastError() != ERROR_ALREADY_EXISTS, "Mapping leaked or another bridge is running");
@@ -152,6 +153,92 @@ void telemetry() {
     }
     std::cout << "PASS telemetry validity, freshness, finite values and sessions\n";
 }
+void skyrimTelemetry() {
+    zelrim::Bridge skyrim(zelrim::Side::Skyrim);
+    require(skyrim.connect(), "Skyrim telemetry create failed");
+    zelrim::Bridge oot(zelrim::Side::Oot);
+    require(oot.connect(), "Skyrim telemetry observer connect failed");
+    require(oot.tick().skyrimTelemetry == zelrim::TelemetryState::Invalid,
+            "Initial Skyrim record must be invalid");
+    zelrim::SkyrimTelemetryInput sample{};
+    sample.validity = zelrim::protocol::kSkyrimContextPlayable |
+        zelrim::protocol::kSkyrimPlayerPresent | zelrim::protocol::kSkyrimCellPresent;
+    sample.invalidationReason = zelrim::protocol::SkyrimInvalidationReason::None;
+    sample.playerFormId = 0x14; sample.cellFormId = 0xABCDEF01; sample.worldspaceFormId = 0;
+    sample.positionX = 0; sample.positionY = -123.5f; sample.positionZ = 456.25f;
+    sample.rotationX = -3.0f; sample.rotationY = 0.5f; sample.rotationZ = 6.0f;
+    require(skyrim.publishSkyrimTelemetry(sample), "Valid Skyrim telemetry publish failed");
+    auto status = oot.tick();
+    require(status.skyrimTelemetry == zelrim::TelemetryState::Usable, "Skyrim telemetry not usable");
+    require(status.snapshot.skyrim.cellFormId == sample.cellFormId &&
+            status.snapshot.skyrim.worldspaceFormId == 0 &&
+            status.snapshot.skyrim.positionY == sample.positionY &&
+            status.snapshot.skyrim.rotationZ == sample.rotationZ, "Skyrim telemetry values changed");
+    for (std::uint32_t pattern = 1; pattern <= 100; ++pattern) {
+        sample.positionX = static_cast<float>(pattern);
+        sample.positionY = static_cast<float>(pattern + 1000);
+        sample.positionZ = static_cast<float>(pattern + 2000);
+        sample.rotationX = static_cast<float>(pattern + 3000);
+        sample.rotationY = static_cast<float>(pattern + 4000);
+        sample.rotationZ = static_cast<float>(pattern + 5000);
+        require(skyrim.publishSkyrimTelemetry(sample), "Changing Skyrim telemetry publish failed");
+        const auto coherent = oot.tick().snapshot.skyrim;
+        require(coherent.positionY == coherent.positionX + 1000 &&
+                coherent.positionZ == coherent.positionX + 2000 &&
+                coherent.rotationX == coherent.positionX + 3000 &&
+                coherent.rotationY == coherent.positionX + 4000 &&
+                coherent.rotationZ == coherent.positionX + 5000, "Torn Skyrim telemetry record observed");
+    }
+    const auto sequence = oot.tick().snapshot.skyrim.sequence;
+    sample.rotationY = std::numeric_limits<float>::quiet_NaN();
+    require(!skyrim.publishSkyrimTelemetry(sample), "Non-finite Skyrim telemetry accepted");
+    require(oot.tick().snapshot.skyrim.sequence == sequence, "Rejected Skyrim sample changed record");
+    zelrim::SkyrimTelemetryInput paused{};
+    paused.validity = zelrim::protocol::kSkyrimPaused;
+    paused.invalidationReason = zelrim::protocol::SkyrimInvalidationReason::Paused;
+    require(skyrim.publishSkyrimTelemetry(paused), "Paused invalidation rejected");
+    require(oot.tick().skyrimTelemetry == zelrim::TelemetryState::Invalid, "Paused context not invalid");
+    std::cout << "PASS Skyrim telemetry validity, identity and finite values\n";
+}
+void skyrimCaptureState() {
+    zelrim::skse::WorldTelemetryState state;
+    zelrim::skse::WorldSample sample{};
+    require(state.capture(sample, false).invalidationReason ==
+        zelrim::protocol::SkyrimInvalidationReason::NoPlayableContext, "Startup context accepted");
+    state.preLoad();
+    require(state.capture(sample, false).invalidationReason ==
+        zelrim::protocol::SkyrimInvalidationReason::Loading, "Loading context not exposed");
+    state.postLoad(true);
+    require(state.capture(sample, false).invalidationReason ==
+        zelrim::protocol::SkyrimInvalidationReason::Loading, "Load settling not retained without player");
+    sample.playerPresent = true; sample.playerFormId = 0x14;
+    require(state.capture(sample, false).invalidationReason ==
+        zelrim::protocol::SkyrimInvalidationReason::Loading, "Load settling not retained without cell");
+    sample.cellPresent = true; sample.cellFormId = 1; sample.worldspaceFormId = 2;
+    require(state.capture(sample, false).invalidationReason ==
+        zelrim::protocol::SkyrimInvalidationReason::Loading, "Settling barrier missing");
+    require(state.capture(sample, false).invalidationReason ==
+        zelrim::protocol::SkyrimInvalidationReason::None, "Settled sample not usable");
+    sample.playerPresent = false;
+    require(state.capture(sample, false).invalidationReason ==
+        zelrim::protocol::SkyrimInvalidationReason::NoPlayer, "Missing player not exposed");
+    sample.playerPresent = true; sample.cellPresent = false;
+    require(state.capture(sample, false).invalidationReason ==
+        zelrim::protocol::SkyrimInvalidationReason::NoCell, "Missing cell not exposed");
+    sample.cellPresent = true;
+    sample.cellFormId = 3;
+    auto changed = state.capture(sample, false);
+    require(changed.invalidationReason == zelrim::protocol::SkyrimInvalidationReason::CellOrWorldspaceChanged &&
+            (changed.validity & zelrim::protocol::kSkyrimTransition), "Cell transition barrier missing");
+    require(state.capture(sample, false).invalidationReason ==
+        zelrim::protocol::SkyrimInvalidationReason::None, "New cell did not settle");
+    require(state.capture(sample, true).invalidationReason ==
+        zelrim::protocol::SkyrimInvalidationReason::Paused, "Pause not invalidated");
+    state.postLoad(false);
+    require(state.capture(sample, false).invalidationReason ==
+        zelrim::protocol::SkyrimInvalidationReason::NoPlayableContext, "Failed load accepted");
+    std::cout << "PASS Skyrim capture loading, pause and cell transition state\n";
+}
 void synchronization() {
     zelrim::Bridge skyrim(zelrim::Side::Skyrim);
     require(skyrim.connect(), "Create failed");
@@ -204,6 +291,8 @@ int main(int argc, char** argv) {
         lifecycle(zelrim::Side::Oot, argv[1], argv[2]);
         incompatible();
         telemetry();
+        skyrimTelemetry();
+        skyrimCaptureState();
         synchronization();
         return 0;
     } catch (const std::exception& error) {

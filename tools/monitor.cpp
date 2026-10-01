@@ -60,6 +60,24 @@ int main(int argc, char** argv) {
                         !(t.validity & zelrim::protocol::kTransition) && !t.invalidationReason && finite;
                     const char* state = !oot ? "unavailable" : !complete ? "missing" : !valid ? "invalid" :
                         age >= zelrim::protocol::kTelemetryFreshnessMs ? "stale" : "usable";
+                    const auto& s = copy.skyrim;
+                    const bool skyrimComplete = s.sequence && sessionPresent(s.sessionId) &&
+                        s.publicationBegin == s.sequence && s.publicationEnd == s.sequence;
+                    const auto skyrimAge = skyrimComplete && s.captureUptimeMs <= now ? now - s.captureUptimeMs : 0;
+                    const auto skyrimRequired = zelrim::protocol::kSkyrimContextPlayable |
+                        zelrim::protocol::kSkyrimPlayerPresent | zelrim::protocol::kSkyrimCellPresent;
+                    const bool skyrimContext = (s.validity & skyrimRequired) == skyrimRequired;
+                    const bool skyrimFinite = std::isfinite(s.positionX) && std::isfinite(s.positionY) &&
+                        std::isfinite(s.positionZ) && std::isfinite(s.rotationX) &&
+                        std::isfinite(s.rotationY) && std::isfinite(s.rotationZ);
+                    const bool skyrimValid = skyrimComplete && skyrimContext &&
+                        !(s.validity & ~zelrim::protocol::kKnownSkyrimValidity) &&
+                        !(s.validity & (zelrim::protocol::kSkyrimPaused | zelrim::protocol::kSkyrimLoading |
+                                        zelrim::protocol::kSkyrimTransition)) &&
+                        !s.invalidationReason && skyrimFinite;
+                    const char* skyrimState = !sky ? "unavailable" : !skyrimComplete ? "missing" :
+                        !skyrimValid ? "invalid" : skyrimAge >= zelrim::protocol::kTelemetryFreshnessMs ?
+                        "stale" : "usable";
                     std::cout << "now=" << now << " skyrimPid=" << copy.skyrimPid << " skyrimAlive=" << sky
                               << " ootPid=" << copy.ootPid << " ootAlive=" << oot << " telemetry=" << state
                               << " session="; session(std::cout, t.sessionId);
@@ -69,6 +87,15 @@ int main(int argc, char** argv) {
                         << " pos=(" << t.positionX << ',' << t.positionY << ',' << t.positionZ << ") yaw=(" << t.worldYaw
                         << ',' << t.shapeYaw << ") flags=(0x" << std::hex << t.stateFlags1 << ",0x" << t.stateFlags2
                         << ",0x" << t.bgCheckFlags << std::dec << ')';
+                    std::cout << " skyrimTelemetry=" << skyrimState << " skyrimSession=";
+                    session(std::cout, s.sessionId);
+                    std::cout << " skyrimSequence=" << s.sequence << " skyrimAgeMs=" << skyrimAge
+                        << " skyrimValidity=0x" << std::hex << s.validity << std::dec
+                        << " skyrimReason=" << s.invalidationReason;
+                    if (skyrimValid) std::cout << " player=0x" << std::hex << s.playerFormId
+                        << " cell=0x" << s.cellFormId << " worldspace=0x" << s.worldspaceFormId << std::dec
+                        << " skyrimPos=(" << s.positionX << ',' << s.positionY << ',' << s.positionZ << ')'
+                        << " skyrimRot=(" << s.rotationX << ',' << s.rotationY << ',' << s.rotationZ << ')';
                     std::cout << std::endl; read = true;
                 }
             }

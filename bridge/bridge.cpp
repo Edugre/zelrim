@@ -29,6 +29,10 @@ bool finite(const TelemetryInput& v) {
            std::isfinite(v.velocityX) && std::isfinite(v.velocityY) && std::isfinite(v.velocityZ) &&
            std::isfinite(v.speedXZ);
 }
+bool finite(const SkyrimTelemetryInput& v) {
+    return std::isfinite(v.positionX) && std::isfinite(v.positionY) && std::isfinite(v.positionZ) &&
+           std::isfinite(v.rotationX) && std::isfinite(v.rotationY) && std::isfinite(v.rotationZ);
+}
 bool zeroSession(const std::uint8_t* id) {
     for (unsigned i = 0; i < 16; ++i) if (id[i]) return false;
     return true;
@@ -66,6 +70,29 @@ void writeRecord(protocol::LinkTelemetry& out, const std::uint8_t* session,
     next.publicationEnd = sequence;
     out = next;
 }
+void writeRecord(protocol::SkyrimTelemetry& out, const std::uint8_t* session,
+                 std::uint64_t sequence, const SkyrimTelemetryInput& in) {
+    out.publicationEnd = 0;
+    out.publicationBegin = sequence;
+    protocol::SkyrimTelemetry next{};
+    std::memcpy(next.sessionId, session, 16);
+    next.sequence = sequence;
+    next.captureUptimeMs = GetTickCount64();
+    next.publicationBegin = sequence;
+    next.validity = in.validity;
+    next.invalidationReason = static_cast<std::uint32_t>(in.invalidationReason);
+    const auto required = protocol::kSkyrimContextPlayable | protocol::kSkyrimPlayerPresent |
+                          protocol::kSkyrimCellPresent;
+    if ((in.validity & required) == required) {
+        next.playerFormId = in.playerFormId;
+        next.cellFormId = in.cellFormId;
+        next.worldspaceFormId = in.worldspaceFormId;
+        next.positionX = in.positionX; next.positionY = in.positionY; next.positionZ = in.positionZ;
+        next.rotationX = in.rotationX; next.rotationY = in.rotationY; next.rotationZ = in.rotationZ;
+    }
+    next.publicationEnd = sequence;
+    out = next;
+}
 TelemetryState classify(const protocol::LinkTelemetry& t, PeerState peer, std::uint64_t now,
                         bool waitForNew, std::uint64_t rejected, std::uint64_t& age) {
     if (peer != PeerState::Connected) return TelemetryState::Unavailable;
@@ -82,6 +109,26 @@ TelemetryState classify(const protocol::LinkTelemetry& t, PeerState peer, std::u
     const bool allFinite = std::isfinite(t.positionX) && std::isfinite(t.positionY) && std::isfinite(t.positionZ) &&
         std::isfinite(t.velocityX) && std::isfinite(t.velocityY) && std::isfinite(t.velocityZ) && std::isfinite(t.speedXZ);
     if (!allFinite || (t.validity & protocol::kTransition)) return TelemetryState::Invalid;
+    return age >= protocol::kTelemetryFreshnessMs ? TelemetryState::Stale : TelemetryState::Usable;
+}
+TelemetryState classify(const protocol::SkyrimTelemetry& t, PeerState peer, std::uint64_t now,
+                        bool waitForNew, std::uint64_t rejected, std::uint64_t& age) {
+    if (peer != PeerState::Connected) return TelemetryState::Unavailable;
+    if (!t.sequence || zeroSession(t.sessionId)) return TelemetryState::Missing;
+    if (t.publicationBegin != t.sequence || t.publicationEnd != t.sequence || (waitForNew && t.sequence == rejected))
+        return TelemetryState::Unavailable;
+    if (t.captureUptimeMs > now) return TelemetryState::Stale;
+    age = now - t.captureUptimeMs;
+    const auto required = protocol::kSkyrimContextPlayable | protocol::kSkyrimPlayerPresent |
+                          protocol::kSkyrimCellPresent;
+    const bool context = (t.validity & required) == required;
+    if ((t.validity & ~protocol::kKnownSkyrimValidity) || !context ||
+        t.invalidationReason != static_cast<std::uint32_t>(protocol::SkyrimInvalidationReason::None) ||
+        (t.validity & (protocol::kSkyrimPaused | protocol::kSkyrimLoading | protocol::kSkyrimTransition)))
+        return TelemetryState::Invalid;
+    const bool allFinite = std::isfinite(t.positionX) && std::isfinite(t.positionY) && std::isfinite(t.positionZ) &&
+        std::isfinite(t.rotationX) && std::isfinite(t.rotationY) && std::isfinite(t.rotationZ);
+    if (!allFinite) return TelemetryState::Invalid;
     return age >= protocol::kTelemetryFreshnessMs ? TelemetryState::Stale : TelemetryState::Usable;
 }
 }
@@ -115,12 +162,19 @@ bool Bridge::connect() {
     auto& pid = side_ == Side::Skyrim ? header_->skyrimPid : header_->ootPid;
     auto& beat = side_ == Side::Skyrim ? header_->skyrimHeartbeatMs : header_->ootHeartbeatMs;
     beat = GetTickCount64(); pid = GetCurrentProcessId(); attached_ = true;
+    makeSession(sessionId_); nextSequence_ = 1;
     if (side_ == Side::Oot) {
-        makeSession(sessionId_); nextSequence_ = 1;
         TelemetryInput initial{}; initial.invalidationReason = protocol::InvalidationReason::NoPlayableContext;
         writeRecord(header_->link, sessionId_, nextSequence_++, initial);
+    } else {
+        SkyrimTelemetryInput initial{};
+        writeRecord(header_->skyrim, sessionId_, nextSequence_++, initial);
     }
-    if (lock.abandoned) { waitForNewPublication_ = true; rejectedSequence_ = header_->link.sequence; }
+    if (lock.abandoned) {
+        waitForNewLinkPublication_ = waitForNewSkyrimPublication_ = true;
+        rejectedLinkSequence_ = header_->link.sequence;
+        rejectedSkyrimSequence_ = header_->skyrim.sequence;
+    }
     return true;
 }
 
@@ -136,10 +190,20 @@ Status Bridge::tick() {
     const auto beat = side_ == Side::Skyrim ? header_->ootHeartbeatMs : header_->skyrimHeartbeatMs;
     result.peer = pid == 0 ? PeerState::Disconnected :
         (beat > now || now - beat >= protocol::kHeartbeatTimeoutMs ? PeerState::TimedOut : PeerState::Connected);
-    if (lock.abandoned) { waitForNewPublication_ = true; rejectedSequence_ = result.snapshot.link.sequence; }
-    if (waitForNewPublication_ && result.snapshot.link.sequence != rejectedSequence_) waitForNewPublication_ = false;
+    if (lock.abandoned) {
+        waitForNewLinkPublication_ = waitForNewSkyrimPublication_ = true;
+        rejectedLinkSequence_ = result.snapshot.link.sequence;
+        rejectedSkyrimSequence_ = result.snapshot.skyrim.sequence;
+    }
+    if (waitForNewLinkPublication_ && result.snapshot.link.sequence != rejectedLinkSequence_)
+        waitForNewLinkPublication_ = false;
+    if (waitForNewSkyrimPublication_ && result.snapshot.skyrim.sequence != rejectedSkyrimSequence_)
+        waitForNewSkyrimPublication_ = false;
     result.telemetry = classify(result.snapshot.link, side_ == Side::Skyrim ? result.peer : PeerState::Connected,
-                                now, waitForNewPublication_, rejectedSequence_, result.telemetryAgeMs);
+                                now, waitForNewLinkPublication_, rejectedLinkSequence_, result.telemetryAgeMs);
+    result.skyrimTelemetry = classify(result.snapshot.skyrim,
+        side_ == Side::Oot ? result.peer : PeerState::Connected, now,
+        waitForNewSkyrimPublication_, rejectedSkyrimSequence_, result.skyrimTelemetryAgeMs);
     return result;
 }
 
@@ -154,7 +218,27 @@ bool Bridge::publishTelemetry(const TelemetryInput& input) noexcept {
     try {
         Lock lock(mutex_, 0);
         if (!lock.locked || !validHeader(*header_)) return false;
+        if (lock.abandoned) header_->skyrim = {};
         writeRecord(header_->link, sessionId_, nextSequence_++, input);
+        return true;
+    } catch (...) { return false; }
+}
+
+bool Bridge::publishSkyrimTelemetry(const SkyrimTelemetryInput& input) noexcept {
+    if (side_ != Side::Skyrim || !attached_ || !header_) return false;
+    const auto required = protocol::kSkyrimContextPlayable | protocol::kSkyrimPlayerPresent |
+                          protocol::kSkyrimCellPresent;
+    const bool usableContext = (input.validity & required) == required;
+    if ((input.validity & ~protocol::kKnownSkyrimValidity) ||
+        (usableContext && (input.invalidationReason != protocol::SkyrimInvalidationReason::None ||
+            (input.validity & (protocol::kSkyrimPaused | protocol::kSkyrimLoading | protocol::kSkyrimTransition)) ||
+            !finite(input))) ||
+        (!usableContext && input.invalidationReason == protocol::SkyrimInvalidationReason::None)) return false;
+    try {
+        Lock lock(mutex_, 0);
+        if (!lock.locked || !validHeader(*header_)) return false;
+        if (lock.abandoned) header_->link = {};
+        writeRecord(header_->skyrim, sessionId_, nextSequence_++, input);
         return true;
     } catch (...) { return false; }
 }
@@ -167,12 +251,14 @@ void Bridge::disconnect(DWORD waitMs) noexcept {
                 (side_ == Side::Skyrim ? header_->skyrimPid : header_->ootPid) = 0;
                 (side_ == Side::Skyrim ? header_->skyrimHeartbeatMs : header_->ootHeartbeatMs) = 0;
                 if (side_ == Side::Oot) header_->link = {};
+                else header_->skyrim = {};
             }
             ReleaseMutex(mutex_);
         }
         UnmapViewOfFile(header_); header_ = nullptr;
     }
     if (mapping_) CloseHandle(mapping_);
-    mapping_ = nullptr; attached_ = false; nextSequence_ = rejectedSequence_ = 0; waitForNewPublication_ = false;
+    mapping_ = nullptr; attached_ = false; nextSequence_ = rejectedLinkSequence_ = rejectedSkyrimSequence_ = 0;
+    waitForNewLinkPublication_ = waitForNewSkyrimPublication_ = false;
 }
 } // namespace zelrim

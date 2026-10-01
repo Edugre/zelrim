@@ -47,8 +47,10 @@ int main(int argc, char** argv) {
         auto load = reinterpret_cast<bool (*)(const SKSEInterface*)>(GetProcAddress(module, "SKSEPlugin_Load"));
         auto stop = reinterpret_cast<void (*)()>(GetProcAddress(module, "Zelrim_Shutdown"));
         auto running = reinterpret_cast<bool (*)()>(GetProcAddress(module, "Zelrim_IsRunning"));
+        auto testMode = reinterpret_cast<void (*)()>(GetProcAddress(module, "Zelrim_EnableTestMode"));
         auto* version = reinterpret_cast<SKSEPluginVersionData*>(GetProcAddress(module, "SKSEPlugin_Version"));
-        require(load && stop && running && version && version->compatibleVersions[0] == RUNTIME_VERSION_1_7_104, "Missing/invalid plugin exports");
+        require(load && stop && running && testMode && version &&
+                version->compatibleVersions[0] == RUNTIME_VERSION_1_7_104, "Missing/invalid plugin exports");
         SKSEInterface api{};
         api.runtimeVersion = RUNTIME_VERSION_1_7_104;
         api.QueryInterface = query;
@@ -61,6 +63,7 @@ int main(int argc, char** argv) {
             tasks.interfaceVersion = SKSETaskInterface::kInterfaceVersion;
         }
         require(load(&api), "Plugin load failed");
+        testMode();
         require(listener != nullptr, "No SKSE listener");
         SKSEMessagingInterface::Message message{ "SKSE", SKSEMessagingInterface::kMessage_DataLoaded, 0, nullptr };
         listener(&message);

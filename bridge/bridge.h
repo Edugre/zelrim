@@ -18,10 +18,19 @@ struct TelemetryInput {
     float velocityX = 0, velocityY = 0, velocityZ = 0, speedXZ = 0;
     std::uint32_t stateFlags1 = 0, stateFlags2 = 0, bgCheckFlags = 0;
 };
+struct SkyrimTelemetryInput {
+    std::uint32_t validity = 0;
+    protocol::SkyrimInvalidationReason invalidationReason = protocol::SkyrimInvalidationReason::NoPlayableContext;
+    std::uint32_t playerFormId = 0, cellFormId = 0, worldspaceFormId = 0;
+    float positionX = 0, positionY = 0, positionZ = 0;
+    float rotationX = 0, rotationY = 0, rotationZ = 0;
+};
 struct Status {
     PeerState peer = PeerState::Unavailable;
     TelemetryState telemetry = TelemetryState::Unavailable;
     std::uint64_t telemetryAgeMs = 0;
+    TelemetryState skyrimTelemetry = TelemetryState::Unavailable;
+    std::uint64_t skyrimTelemetryAgeMs = 0;
     protocol::Header snapshot{};
 };
 class Bridge {
@@ -33,6 +42,7 @@ public:
     bool connect();
     Status tick();
     bool publishTelemetry(const TelemetryInput& input) noexcept; // OOT only, zero wait
+    bool publishSkyrimTelemetry(const SkyrimTelemetryInput& input) noexcept; // Skyrim only, zero wait
     void disconnect(DWORD waitMs = 100) noexcept;
 private:
     Side side_;
@@ -40,7 +50,7 @@ private:
     protocol::Header* header_ = nullptr;
     bool attached_ = false;
     std::uint8_t sessionId_[16]{};
-    std::uint64_t nextSequence_ = 0, rejectedSequence_ = 0;
-    bool waitForNewPublication_ = false;
+    std::uint64_t nextSequence_ = 0, rejectedLinkSequence_ = 0, rejectedSkyrimSequence_ = 0;
+    bool waitForNewLinkPublication_ = false, waitForNewSkyrimPublication_ = false;
 };
 } // namespace zelrim
