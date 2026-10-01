@@ -2,6 +2,7 @@
 #include "bridge/bridge.h"
 #include <memory>
 #include <cstdio>
+#include <optional>
 
 namespace zelrim::shipwright {
 namespace {
@@ -12,6 +13,7 @@ bool hasTicked = false;
 bool reported = false;
 PeerState previous = PeerState::Unavailable;
 std::uint32_t previousPid = 0;
+std::optional<TelemetryInput> pending;
 void emit(const char* message) noexcept {
     try { if (logger) logger(message); } catch (...) {}
 }
@@ -35,6 +37,7 @@ void start(Log log) noexcept {
     lastTick = 0;
     hasTicked = reported = false;
     previousPid = 0;
+    pending.reset();
     try {
         bridge = std::make_unique<Bridge>(Side::Oot);
         emit("Zelrim OOT heartbeat started (Local\\Zelrim_v1)");
@@ -50,6 +53,7 @@ void tick() noexcept {
     hasTicked = true;
     try {
         const auto status = bridge->connect() ? bridge->tick() : Status{};
+        if (pending && bridge->publishTelemetry(*pending)) pending.reset();
         if (!reported || status.peer != previous || status.snapshot.skyrimPid != previousPid) {
             char message[256];
             std::snprintf(message, sizeof(message),
@@ -66,11 +70,27 @@ void tick() noexcept {
     } catch (const std::exception& error) { disable(error.what()); }
       catch (...) { disable("Unknown heartbeat error"); }
 }
+void publish(const TelemetryInput& input) noexcept {
+    if (!bridge) return;
+    // An invalidation cannot be replaced by an older/later valid capture until it publishes.
+    if (pending && pending->invalidationReason != protocol::InvalidationReason::None &&
+        input.invalidationReason == protocol::InvalidationReason::None) return;
+    pending = input;
+    if (bridge->publishTelemetry(*pending)) pending.reset();
+}
+void invalidate(protocol::InvalidationReason reason, std::uint32_t contextBits) noexcept {
+    TelemetryInput input{};
+    input.validity = contextBits & (protocol::kPaused | protocol::kCutscene | protocol::kTransition);
+    input.invalidationReason = reason;
+    publish(input);
+}
 void stop() noexcept {
     if (bridge) {
+        invalidate(protocol::InvalidationReason::Detached);
         bridge.reset();
         emit("Zelrim OOT heartbeat detached");
     }
     logger = nullptr;
+    pending.reset();
 }
 }

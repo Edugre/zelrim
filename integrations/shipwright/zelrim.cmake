@@ -6,6 +6,9 @@ get_filename_component(ZELRIM_SOURCE_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSO
 target_sources(soh PRIVATE
     "${ZELRIM_SOURCE_ROOT}/bridge/bridge.cpp"
     "${ZELRIM_SOURCE_ROOT}/integrations/shipwright/heartbeat.cpp")
+if(ZELRIM_SHIPWRIGHT_RUNTIME)
+    target_sources(soh PRIVATE "${ZELRIM_SOURCE_ROOT}/integrations/shipwright/telemetry.cpp")
+endif()
 target_include_directories(soh PRIVATE "${ZELRIM_SOURCE_ROOT}")
 target_compile_definitions(soh PRIVATE ZELRIM_HEARTBEAT_ENABLED)
 # Keep Windows header policy local to our sources; upstream uses common-dialog

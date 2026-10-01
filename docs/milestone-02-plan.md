@@ -1,6 +1,7 @@
 # Milestone 2 plan: read-only Link telemetry
 
-Status: planned; no telemetry implementation or gameplay integration yet.
+Status: implemented on 2026-10-01; real-game verification remains. See
+[milestone-02.md](milestone-02.md). No gameplay integration is included.
 
 ## Outcome and scope
 

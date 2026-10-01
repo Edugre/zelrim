@@ -1,6 +1,8 @@
 #include "bridge/bridge.h"
 #include <functional>
+#include <cstring>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -77,10 +79,12 @@ void lifecycle(zelrim::Side side, const char* peerExe, const char* ownExe) {
     std::cout << "PASS lifecycle side=" << (side == zelrim::Side::Skyrim ? "skyrim" : "oot") << '\n';
 }
 void incompatible() {
+    require(zelrim::protocol::kVersion != 1 && zelrim::protocol::kMappingBytes != 64,
+            "Protocol v2 must be rejected by a v1 version/size reader");
     const auto mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
         0, zelrim::protocol::kMappingBytes, zelrim::protocol::kMappingName);
     require(mapping != nullptr && GetLastError() != ERROR_ALREADY_EXISTS, "Mapping leaked or another bridge is running");
-    auto* header = static_cast<zelrim::protocol::Header*>(MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, 64));
+    auto* header = static_cast<zelrim::protocol::Header*>(MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, zelrim::protocol::kMappingBytes));
     require(header != nullptr, "Test mapping failed");
     for (int field = 0; field < 3; ++field) {
         *header = {};
@@ -102,11 +106,61 @@ void incompatible() {
     CloseHandle(mapping);
     std::cout << "PASS incompatible magic/version/size\n";
 }
+void telemetry() {
+    zelrim::Bridge skyrim(zelrim::Side::Skyrim);
+    require(skyrim.connect(), "Telemetry Skyrim create failed");
+    std::uint8_t firstSession[16]{};
+    {
+        zelrim::Bridge oot(zelrim::Side::Oot);
+        require(oot.connect(), "Telemetry OOT connect failed");
+        auto initial = skyrim.tick();
+        require(initial.telemetry == zelrim::TelemetryState::Invalid, "Attachment record must be invalid");
+        std::memcpy(firstSession, initial.snapshot.link.sessionId, 16);
+        zelrim::TelemetryInput sample{};
+        sample.validity = zelrim::protocol::kContextPlayable | zelrim::protocol::kPlayerPresent | zelrim::protocol::kCutscene;
+        sample.invalidationReason = zelrim::protocol::InvalidationReason::None;
+        sample.sceneId = -3; sample.roomId = 7; sample.gameplayFrame = 0xFFFFFFFEu; sample.linkAge = 1;
+        sample.positionX = 0.0f; sample.positionY = -2.5f; sample.positionZ = 3.25f;
+        sample.worldYaw = -32768; sample.shapeYaw = 32767;
+        sample.velocityX = 1; sample.velocityY = 2; sample.velocityZ = 3; sample.speedXZ = 4;
+        sample.stateFlags1 = 0x12345678; sample.stateFlags2 = 0x87654321; sample.bgCheckFlags = 0x201;
+        require(oot.publishTelemetry(sample), "Valid telemetry publish failed");
+        auto status = skyrim.tick();
+        require(status.telemetry == zelrim::TelemetryState::Usable, "Valid telemetry not usable");
+        require(status.snapshot.link.positionX == 0.0f && status.snapshot.link.positionY == -2.5f &&
+                status.snapshot.link.worldYaw == -32768 && status.snapshot.link.stateFlags1 == 0x12345678,
+                "Telemetry values changed");
+        const auto sequence = status.snapshot.link.sequence;
+        sample.positionX = std::numeric_limits<float>::infinity();
+        require(!oot.publishTelemetry(sample), "Non-finite telemetry accepted");
+        require(skyrim.tick().snapshot.link.sequence == sequence, "Rejected sample changed record");
+        oot.publishTelemetry(zelrim::TelemetryInput{}); // reason is nonzero by default
+        require(skyrim.tick().telemetry == zelrim::TelemetryState::Invalid, "Invalid context not reported");
+        sample.positionX = 1.0f;
+        require(oot.publishTelemetry(sample), "Fresh telemetry republish failed");
+        Sleep(static_cast<DWORD>(zelrim::protocol::kTelemetryFreshnessMs));
+        require(skyrim.tick().telemetry == zelrim::TelemetryState::Stale, "Old sample not stale");
+    }
+    require(skyrim.tick().peer == zelrim::PeerState::Disconnected, "Telemetry detach not visible");
+    {
+        zelrim::Bridge oot(zelrim::Side::Oot);
+        require(oot.connect(), "Telemetry restart failed");
+        const auto restarted = skyrim.tick();
+        require(std::memcmp(firstSession, restarted.snapshot.link.sessionId, 16) != 0,
+                "Same-PID restart reused session");
+        require(restarted.telemetry == zelrim::TelemetryState::Invalid, "Restart did not invalidate telemetry");
+    }
+    std::cout << "PASS telemetry validity, freshness, finite values and sessions\n";
+}
 void synchronization() {
     zelrim::Bridge skyrim(zelrim::Side::Skyrim);
     require(skyrim.connect(), "Create failed");
     zelrim::Bridge oot(zelrim::Side::Oot);
     require(oot.connect(), "Open failed");
+    zelrim::TelemetryInput sample{};
+    sample.validity = zelrim::protocol::kContextPlayable | zelrim::protocol::kPlayerPresent;
+    sample.invalidationReason = zelrim::protocol::InvalidationReason::None;
+    require(oot.publishTelemetry(sample), "Pre-abandon publication failed");
     const auto mutex = OpenMutexW(SYNCHRONIZE | MUTEX_MODIFY_STATE, FALSE, zelrim::protocol::kDataMutexName);
     require(mutex != nullptr, "OpenMutex failed");
     const auto ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -119,11 +173,20 @@ void synchronization() {
         // Deliberately abandon the mutex on thread exit.
     });
     WaitForSingleObject(ready, INFINITE);
+    const auto publishStart = GetTickCount64();
+    require(!oot.publishTelemetry(sample), "Contended telemetry publish must be dropped");
+    require(GetTickCount64() - publishStart < 50, "Telemetry publication waited for the mutex");
     const auto result = skyrim.tick();
     SetEvent(release);
     blocker.join();
     require(result.peer == zelrim::PeerState::Unavailable, "Blocked mutex must fail closed");
-    require(skyrim.tick().peer == zelrim::PeerState::Connected, "Abandoned mutex recovery failed");
+    const auto abandoned = skyrim.tick();
+    require(abandoned.peer == zelrim::PeerState::Connected, "Abandoned mutex recovery failed");
+    require(abandoned.telemetry == zelrim::TelemetryState::Unavailable,
+            "Abandoned publication was accepted");
+    require(oot.publishTelemetry(sample), "Post-abandon publication failed");
+    require(skyrim.tick().telemetry == zelrim::TelemetryState::Usable,
+            "Complete publication did not recover abandonment");
     // A live process that stops ticking is unavailable too; no PID-based takeover.
     Sleep(static_cast<DWORD>(zelrim::protocol::kHeartbeatTimeoutMs));
     require(skyrim.tick().peer == zelrim::PeerState::TimedOut, "Stalled peer did not time out");
@@ -140,6 +203,7 @@ int main(int argc, char** argv) {
         lifecycle(zelrim::Side::Skyrim, argv[2], argv[1]);
         lifecycle(zelrim::Side::Oot, argv[1], argv[2]);
         incompatible();
+        telemetry();
         synchronization();
         return 0;
     } catch (const std::exception& error) {

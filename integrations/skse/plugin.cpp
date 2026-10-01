@@ -18,6 +18,9 @@ struct State {
     zelrim::PeerState previous = zelrim::PeerState::Unavailable;
     std::uint32_t previousPid = 0;
     bool reported = false;
+    zelrim::TelemetryState previousTelemetry = zelrim::TelemetryState::Unavailable;
+    std::uint8_t previousSession[16]{};
+    std::uint64_t lastTelemetryLogMs = 0;
     bool started = false;
 };
 State* state = nullptr;
@@ -35,6 +38,15 @@ const char* name(zelrim::PeerState peer) {
     case zelrim::PeerState::Connected: return "connected";
     case zelrim::PeerState::Disconnected: return "disconnected";
     case zelrim::PeerState::TimedOut: return "timed-out";
+    default: return "unavailable";
+    }
+}
+const char* telemetryName(zelrim::TelemetryState value) {
+    switch (value) {
+    case zelrim::TelemetryState::Missing: return "missing";
+    case zelrim::TelemetryState::Invalid: return "invalid";
+    case zelrim::TelemetryState::Stale: return "stale";
+    case zelrim::TelemetryState::Usable: return "usable";
     default: return "unavailable";
     }
 }
@@ -57,6 +69,29 @@ public:
                 state->reported = true;
                 state->previous = status.peer;
                 state->previousPid = status.snapshot.ootPid;
+            }
+            const auto now = GetTickCount64();
+            const auto& t = status.snapshot.link;
+            const bool sessionChanged = std::memcmp(state->previousSession, t.sessionId, 16) != 0;
+            const bool transition = sessionChanged || status.telemetry != state->previousTelemetry;
+            if (transition || (status.telemetry == zelrim::TelemetryState::Usable &&
+                               now - state->lastTelemetryLogMs >= 1000)) {
+                char session[33];
+                for (unsigned i = 0; i < 16; ++i) std::snprintf(session + i * 2, 3, "%02x", t.sessionId[i]);
+                char message[640];
+                std::snprintf(message, sizeof(message),
+                    "Zelrim telemetry=%s session=%s sequence=%llu ageMs=%llu validity=0x%08lx reason=%lu "
+                    "scene=%d room=%d frame=%lu pos=(%.3f,%.3f,%.3f) yaw=(%d,%d) flags=(0x%08lx,0x%08lx,0x%08lx)",
+                    telemetryName(status.telemetry), session, static_cast<unsigned long long>(t.sequence),
+                    static_cast<unsigned long long>(status.telemetryAgeMs), static_cast<unsigned long>(t.validity),
+                    static_cast<unsigned long>(t.invalidationReason), int(t.sceneId), int(t.roomId),
+                    static_cast<unsigned long>(t.gameplayFrame), t.positionX, t.positionY, t.positionZ,
+                    int(t.worldYaw), int(t.shapeYaw), static_cast<unsigned long>(t.stateFlags1),
+                    static_cast<unsigned long>(t.stateFlags2), static_cast<unsigned long>(t.bgCheckFlags));
+                log(message);
+                std::memcpy(state->previousSession, t.sessionId, 16);
+                state->previousTelemetry = status.telemetry;
+                state->lastTelemetryLogMs = now;
             }
         } catch (const std::exception& error) {
             log(error.what());

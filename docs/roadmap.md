@@ -37,12 +37,16 @@ Read these documents for implementation details and observed limitations:
 - [Transport foundation implementation plan](transport-foundation-plan.md)
 - [Shipwright heartbeat integration](shipwright-heartbeat.md)
 
-**Milestone 2 is planned, not implemented.** Its detailed plan is
-[read-only Link telemetry](milestone-02-plan.md). This is the next implementation
-task. The milestones below continue numbering from the existing milestone files;
+**Milestone 2 is implemented; real-game behavioral verification remains.** Its
+[implementation record](milestone-02.md) and detailed
+[read-only Link telemetry plan](milestone-02-plan.md) distinguish automated/build
+evidence from the remaining in-game matrix. The milestones below continue numbering from the existing milestone files;
 the earlier conversational list of next steps was not a milestone numbering scheme.
 
 ## Milestone 2: Read-only Link telemetry
+
+Implementation completed 2026-10-01. Do not begin milestone 3 until the real-game
+milestone-2 verification matrix is completed and recorded; see `milestone-02.md`.
 
 Publish coherent OOT position, world/shape orientation, and existing state flags.
 Read them through the standalone monitor and Skyrim logs without affecting either
