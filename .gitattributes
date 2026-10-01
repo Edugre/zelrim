@@ -1,0 +1,2 @@
+# Preserve unified-diff context lines and LF endings for reproducible git apply.
+*.patch text eol=lf whitespace=-blank-at-eol

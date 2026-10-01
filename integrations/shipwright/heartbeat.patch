@@ -1,0 +1,60 @@
+diff --git a/soh/CMakeLists.txt b/soh/CMakeLists.txt
+index f356d2148..1ca6eb999 100644
+--- a/soh/CMakeLists.txt
++++ b/soh/CMakeLists.txt
+@@ -228,6 +228,12 @@ set(ALL_FILES
+ ################################################################################
+ add_executable(${PROJECT_NAME} ${ALL_FILES})
+ 
++# Optional adapter; implementation remains in the Zelrim repository.
++set(ZELRIM_INTEGRATION_FILE "" CACHE FILEPATH "Zelrim heartbeat integration CMake file")
++if(ZELRIM_INTEGRATION_FILE)
++    include("${ZELRIM_INTEGRATION_FILE}")
++endif()
++
+ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+ use_props(${PROJECT_NAME} "${CMAKE_CONFIGURATION_TYPES}" "${DEFAULT_CXX_PROPS}")
+ endif()
+diff --git a/soh/soh/OTRGlobals.cpp b/soh/soh/OTRGlobals.cpp
+index 0341e4f36..84b96a145 100644
+--- a/soh/soh/OTRGlobals.cpp
++++ b/soh/soh/OTRGlobals.cpp
+@@ -1,5 +1,8 @@
+ ﻿#include "OTRGlobals.h"
+ #include "OTRAudio.h"
++#ifdef ZELRIM_HEARTBEAT_ENABLED
++#include "integrations/shipwright/heartbeat.h"
++#endif
+ #include <algorithm>
+ #include <atomic>
+ #include <cstdlib>
+@@ -1660,6 +1663,9 @@ extern "C" void InitOTR(int argc, char* argv[]) {
+     ShipInit::InitAll();
+     Rando::StaticData::InitHashMaps();
+     OTRGlobals::Instance->gRandoContext->AddExcludedOptions();
++#ifdef ZELRIM_HEARTBEAT_ENABLED
++    zelrim::shipwright::start([](const char* message) { SPDLOG_INFO("{}", message); });
++#endif
+ }
+ 
+ extern "C" void SaveManager_ThreadPoolWait() {
+@@ -1667,6 +1673,9 @@ extern "C" void SaveManager_ThreadPoolWait() {
+ }
+ 
+ extern "C" void DeinitOTR() {
++#ifdef ZELRIM_HEARTBEAT_ENABLED
++    zelrim::shipwright::stop();
++#endif
+     SaveManager_ThreadPoolWait();
+     OTRAudio_Exit();
+     if (CVarGetInteger(CVAR_REMOTE_CROWD_CONTROL("Enabled"), 0)) {
+@@ -1727,6 +1736,9 @@ extern "C" uint64_t GetUnixTimestamp() {
+ }
+ 
+ extern "C" void Graph_StartFrame() {
++#ifdef ZELRIM_HEARTBEAT_ENABLED
++    zelrim::shipwright::tick();
++#endif
+     auto gui = std::dynamic_pointer_cast<Fast::Fast3dGui>(Ship::Context::GetRawInstance()->GetWindow()->GetGui());
+ #ifndef __WIIU__
+     using Ship::KbScancode;

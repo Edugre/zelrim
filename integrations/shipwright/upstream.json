@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/HarbourMasters/Shipwright.git",
+  "commit": "ff0209e76f01cf816806cd1d8521373744d1dc8e",
+  "submodules": {
+    "libultraship": "62e973aeb4a53ad4d22bb91e2d9373ecdfcd246c",
+    "torch": "2ab12fe9660aec04e02ee89fe81baed304a1a1d6"
+  }
+}

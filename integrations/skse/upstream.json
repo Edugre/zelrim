@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/ianpatt/skse64.git",
+  "commit": "25b72352adb6543fa6d0bd3795780672b2e238e0",
+  "runtime": "1.7.104",
+  "skse": "2.3.1"
+}
