@@ -178,9 +178,9 @@ bool Bridge::connect() {
     return true;
 }
 
-Status Bridge::tick() {
+Status Bridge::tick(DWORD waitMs) {
     if (!attached_) return {};
-    Lock lock(mutex_, 100);
+    Lock lock(mutex_, waitMs);
     if (!lock.locked) return {};
     if (!validHeader(*header_)) throw std::runtime_error("Bridge protocol changed while attached");
     const auto now = GetTickCount64();

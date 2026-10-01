@@ -16,5 +16,9 @@ See [milestone 2](docs/milestone-02.md) and its original
 See [milestone 3](docs/milestone-03.md) and its
 [read-only Skyrim telemetry plan](docs/milestone-03-plan.md).
 
+See [milestone 4 implementation evidence](docs/milestone-04.md) and its
+[movement-authority proof plan](docs/milestone-04-plan.md). Live two-game
+validation remains before this feasibility gate can be marked complete.
+
 See the [project roadmap and context for future chats](docs/roadmap.md) for the
 milestone sequence, architectural boundaries, and handoff guidance.

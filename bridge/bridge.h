@@ -40,7 +40,7 @@ public:
     Bridge(const Bridge&) = delete;
     Bridge& operator=(const Bridge&) = delete;
     bool connect();
-    Status tick();
+    Status tick(DWORD waitMs = 100);
     bool publishTelemetry(const TelemetryInput& input) noexcept; // OOT only, zero wait
     bool publishSkyrimTelemetry(const SkyrimTelemetryInput& input) noexcept; // Skyrim only, zero wait
     void disconnect(DWORD waitMs = 100) noexcept;

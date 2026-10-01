@@ -2,7 +2,7 @@ set(ZELRIM_SKSE_SOURCE "${PROJECT_SOURCE_DIR}/external/skse64" CACHE PATH "Pinne
 if(NOT EXISTS "${ZELRIM_SKSE_SOURCE}/skse64/PluginAPI.h")
     message(FATAL_ERROR "Fetch the pinned SKSE source described in docs/transport-foundation.md")
 endif()
-add_library(Zelrim SHARED plugin.cpp world_telemetry.cpp
+add_library(Zelrim SHARED plugin.cpp world_telemetry.cpp movement_authority.cpp
     "${ZELRIM_SKSE_SOURCE}/skse64/GameAPI.cpp"
     "${ZELRIM_SKSE_SOURCE}/skse64/GameUtilities.cpp"
     "${ZELRIM_SKSE_SOURCE}/skse64_common/Relocation.cpp")

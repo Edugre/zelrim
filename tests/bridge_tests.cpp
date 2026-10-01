@@ -1,5 +1,6 @@
 #include "bridge/bridge.h"
 #include "integrations/skse/world_telemetry.h"
+#include "integrations/skse/movement_authority.h"
 #include <functional>
 #include <cstring>
 #include <iostream>
@@ -284,6 +285,63 @@ void synchronization() {
     CloseHandle(mutex);
     std::cout << "PASS contention, abandonment, stall and recovery\n";
 }
+zelrim::Status movementStatus() {
+    zelrim::Status s{};
+    s.peer = zelrim::PeerState::Connected;
+    s.telemetry = zelrim::TelemetryState::Usable;
+    s.skyrimTelemetry = zelrim::TelemetryState::Usable;
+    s.snapshot.link.sessionId[0] = 1;
+    s.snapshot.link.sequence = 10;
+    s.snapshot.link.sceneId = 2; s.snapshot.link.roomId = 3;
+    s.snapshot.link.positionX = 100; s.snapshot.link.positionY = 200; s.snapshot.link.positionZ = 300;
+    s.snapshot.link.shapeYaw = 32760;
+    s.snapshot.skyrim.cellFormId = 4; s.snapshot.skyrim.worldspaceFormId = 5;
+    s.snapshot.skyrim.positionX = 1000; s.snapshot.skyrim.positionY = 2000; s.snapshot.skyrim.positionZ = 3000;
+    s.snapshot.skyrim.rotationZ = 0.25f;
+    return s;
+}
+void movementAuthority() {
+    zelrim::skse::MovementAuthority authority({ 2.0f, 1.0f, 50.0f });
+    auto s = movementStatus();
+    auto d = authority.update(s);
+    require(d.action == zelrim::skse::MovementAction::Calibrate && d.positionX == 1000,
+        "Movement proof did not calibrate at the paired origin");
+    require(authority.update(s).action == zelrim::skse::MovementAction::None,
+        "Duplicate Link sequence caused work");
+    ++s.snapshot.link.sequence;
+    s.snapshot.link.positionX += 1; s.snapshot.link.positionY += 2; s.snapshot.link.positionZ += 3;
+    s.snapshot.link.shapeYaw = -32760; // wraps forward by 16 binary-angle units
+    d = authority.update(s);
+    require(d.action == zelrim::skse::MovementAction::Apply && d.positionX == 1002 &&
+        d.positionY == 2006 && d.positionZ == 3004 && d.rotationZ > 0.25f,
+        "Movement transform or yaw wrap is incorrect");
+    s.snapshot.link.sequence = 9;
+    require(authority.update(s).resetReason == zelrim::skse::MovementResetReason::NonMonotonicSequence,
+        "Out-of-order Link sample did not reset");
+
+    zelrim::skse::MovementAuthority contexts;
+    s = movementStatus(); contexts.update(s);
+    ++s.snapshot.link.sequence; ++s.snapshot.link.sceneId;
+    require(contexts.update(s).resetReason == zelrim::skse::MovementResetReason::SpatialContextChanged,
+        "OOT scene change did not reset");
+    s = movementStatus(); contexts.update(s);
+    ++s.snapshot.link.sequence; s.snapshot.link.sessionId[0] = 2;
+    require(contexts.update(s).resetReason == zelrim::skse::MovementResetReason::SessionChanged,
+        "OOT restart session did not reset");
+
+    zelrim::skse::MovementAuthority failures({ 1, -1, 5 });
+    s = movementStatus(); failures.update(s);
+    ++s.snapshot.link.sequence; s.snapshot.link.positionX += 6;
+    require(failures.update(s).resetReason == zelrim::skse::MovementResetReason::ImplausibleDelta,
+        "Implausible movement did not reset");
+    s = movementStatus(); failures.update(s); s.telemetry = zelrim::TelemetryState::Stale;
+    require(failures.update(s).resetReason == zelrim::skse::MovementResetReason::UnusableLink,
+        "Stale movement remained authoritative");
+    s = movementStatus(); failures.update(s); s.skyrimTelemetry = zelrim::TelemetryState::Invalid;
+    require(failures.update(s).resetReason == zelrim::skse::MovementResetReason::UnusableSkyrim,
+        "Invalid Skyrim context retained movement authority");
+    std::cout << "PASS movement calibration, transform, ordering, barriers and recovery\n";
+}
 int main(int argc, char** argv) {
     try {
         require(argc == 3, "Expected paths to both standalone executables");
@@ -294,6 +352,7 @@ int main(int argc, char** argv) {
         skyrimTelemetry();
         skyrimCaptureState();
         synchronization();
+        movementAuthority();
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n'; return 1;
