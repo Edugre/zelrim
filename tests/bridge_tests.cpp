@@ -309,12 +309,22 @@ void movementAuthority() {
     require(authority.update(s).action == zelrim::skse::MovementAction::None,
         "Duplicate Link sequence caused work");
     ++s.snapshot.link.sequence;
+    require(authority.update(s).action == zelrim::skse::MovementAction::None,
+        "Fresh stationary Link sample caused a redundant Skyrim move");
+    ++s.snapshot.link.sequence;
     s.snapshot.link.positionX += 1; s.snapshot.link.positionY += 2; s.snapshot.link.positionZ += 3;
     s.snapshot.link.shapeYaw = -32760; // wraps forward by 16 binary-angle units
     d = authority.update(s);
     require(d.action == zelrim::skse::MovementAction::Apply && d.positionX == 1002 &&
         d.positionY == 2006 && d.positionZ == 3004 && d.rotationZ > 0.25f,
         "Movement transform or yaw wrap is incorrect");
+    ++s.snapshot.link.sequence;
+    require(authority.update(s).action == zelrim::skse::MovementAction::None,
+        "Fresh stationary sample after moving caused a redundant Skyrim move");
+    ++s.snapshot.link.sequence;
+    ++s.snapshot.link.shapeYaw;
+    require(authority.update(s).action == zelrim::skse::MovementAction::Apply,
+        "Turning without translation did not move proxy heading");
     s.snapshot.link.sequence = 9;
     require(authority.update(s).resetReason == zelrim::skse::MovementResetReason::NonMonotonicSequence,
         "Out-of-order Link sample did not reset");
@@ -340,10 +350,17 @@ void movementAuthority() {
     s = movementStatus(); failures.update(s); s.skyrimTelemetry = zelrim::TelemetryState::Invalid;
     require(failures.update(s).resetReason == zelrim::skse::MovementResetReason::UnusableSkyrim,
         "Invalid Skyrim context retained movement authority");
+    zelrim::skse::MovementAuthority visible({ 0.1f, 1.0f, 50.0f, 120.0f });
+    s = movementStatus();
+    require(visible.update(s).positionX == 1120.0f, "Visual offset did not separate proxy from player");
     std::cout << "PASS movement calibration, transform, ordering, barriers and recovery\n";
 }
 int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "--movement-only") {
+            movementAuthority();
+            return 0;
+        }
         require(argc == 3, "Expected paths to both standalone executables");
         lifecycle(zelrim::Side::Skyrim, argv[2], argv[1]);
         lifecycle(zelrim::Side::Oot, argv[1], argv[2]);

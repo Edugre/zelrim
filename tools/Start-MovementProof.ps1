@@ -1,9 +1,11 @@
 param(
     [Parameter(Mandatory)][string]$SkyrimDirectory,
     [Parameter(Mandatory)][string]$ProxyBaseFormId,
+    [Parameter(Mandatory)][string]$ExpectedCellFormId,
     [float]$Scale = 1.0,
     [ValidateSet(-1, 1)][int]$YawSign = 1,
-    [float]$MaxDelta = 1000.0
+    [float]$MaxDelta = 1000.0,
+    [float]$VisualOffsetX = 120.0
 )
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -22,9 +24,11 @@ $logDirectory = Join-Path $repo 'build/movement-proof'
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
 $env:ZELRIM_MOVEMENT_PROOF = '1'
 $env:ZELRIM_PROXY_BASE_FORM_ID = $ProxyBaseFormId
+$env:ZELRIM_EXPECTED_CELL_FORM_ID = $ExpectedCellFormId
 $env:ZELRIM_MOVEMENT_SCALE = $Scale.ToString([Globalization.CultureInfo]::InvariantCulture)
 $env:ZELRIM_MOVEMENT_YAW_SIGN = $YawSign.ToString([Globalization.CultureInfo]::InvariantCulture)
 $env:ZELRIM_MOVEMENT_MAX_DELTA = $MaxDelta.ToString([Globalization.CultureInfo]::InvariantCulture)
+$env:ZELRIM_PROXY_OFFSET_X = $VisualOffsetX.ToString([Globalization.CultureInfo]::InvariantCulture)
 $env:ZELRIM_LOG_PATH = Join-Path $logDirectory 'ZelrimSKSE.log'
 Write-Output 'Use only a disposable Skyrim save/test cell and exit without saving.'
 Write-Output "Movement proof log: $env:ZELRIM_LOG_PATH"

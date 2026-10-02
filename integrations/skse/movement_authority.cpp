@@ -8,7 +8,8 @@ constexpr float kRadiansPerBinaryAngle = 6.2831853071795864769f / 65536.0f;
 bool finiteConfig(const MovementProofConfig& c) {
     return std::isfinite(c.scale) && c.scale > 0 && std::isfinite(c.yawSign) &&
         (c.yawSign == 1.0f || c.yawSign == -1.0f) &&
-        std::isfinite(c.maxSampleDelta) && c.maxSampleDelta > 0;
+        std::isfinite(c.maxSampleDelta) && c.maxSampleDelta > 0 &&
+        std::isfinite(c.visualOffsetX);
 }
 }
 MovementDecision MovementAuthority::reset(MovementResetReason reason) noexcept {
@@ -37,10 +38,11 @@ MovementDecision MovementAuthority::update(const Status& status) noexcept {
         cellId_ = sky.cellFormId; worldspaceId_ = sky.worldspaceFormId;
         ootOriginX_ = link.positionX; ootOriginY_ = link.positionY; ootOriginZ_ = link.positionZ;
         previousOotX_ = link.positionX; previousOotY_ = link.positionY; previousOotZ_ = link.positionZ;
-        skyrimOriginX_ = sky.positionX; skyrimOriginY_ = sky.positionY;
+        previousYaw_ = link.shapeYaw;
+        skyrimOriginX_ = sky.positionX + config_.visualOffsetX; skyrimOriginY_ = sky.positionY;
         skyrimOriginZ_ = sky.positionZ; skyrimOriginYaw_ = sky.rotationZ;
         return { MovementAction::Calibrate, MovementResetReason::None, link.sequence,
-            sky.positionX, sky.positionY, sky.positionZ, sky.rotationZ };
+            skyrimOriginX_, sky.positionY, sky.positionZ, sky.rotationZ };
     }
     if (std::memcmp(linkSession_, link.sessionId, sizeof(linkSession_)) != 0)
         return reset(MovementResetReason::SessionChanged);
@@ -66,8 +68,12 @@ MovementDecision MovementAuthority::update(const Status& status) noexcept {
     const float yaw = skyrimOriginYaw_ + config_.yawSign * float(yawDelta) * kRadiansPerBinaryAngle;
     if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) || !std::isfinite(yaw))
         return reset(MovementResetReason::NonFiniteTransform);
+    const bool unchangedPose = stepX == 0.0f && stepY == 0.0f && stepZ == 0.0f &&
+        link.shapeYaw == previousYaw_;
     lastSequence_ = link.sequence;
     previousOotX_ = link.positionX; previousOotY_ = link.positionY; previousOotZ_ = link.positionZ;
+    previousYaw_ = link.shapeYaw;
+    if (unchangedPose) return {};
     return { MovementAction::Apply, MovementResetReason::None, link.sequence, x, y, z, yaw };
 }
 const char* movementResetName(MovementResetReason reason) noexcept {

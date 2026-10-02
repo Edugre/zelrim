@@ -6,6 +6,7 @@
 #include "skse64/GameForms.h"
 #include "skse64/GameMenus.h"
 #include "skse64/GameReferences.h"
+#include "skse64/PapyrusVM.h"
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -19,6 +20,8 @@
 RelocAddr<_LookupFormByID> LookupFormByID(0x001E5860);
 RelocAddr<_MoveRefrToPosition> MoveRefrToPosition(0x00A5D370);
 RelocAddr<_PlaceAtMe_Native> PlaceAtMe_Native(0x00A46DE0);
+RelocPtr<UInt32> g_invalidRefHandle(0x0219E55C);
+RelocPtr<SkyrimVM*> g_skyrimVM(0x021A36E0);
 
 // The pinned header declares these wrappers, but the plugin deliberately links
 // only the small subset of SKSE implementation files it needs.
@@ -68,9 +71,13 @@ struct State {
     bool started = false;
     bool movementProofEnabled = false;
     std::uint32_t proxyBaseFormId = 0;
+    std::uint32_t expectedCellFormId = 0;
     zelrim::skse::MovementAuthority movementAuthority;
     TESObjectREFR* proxy = nullptr;
     std::uint32_t proxyRuntimeFormId = 0;
+    bool proxy3dReported = false;
+    bool appliedPoseLogged = false;
+    std::uint64_t lastMovementLogMs = 0;
     std::uint64_t lastWorldPublicationMs = 0;
 };
 State* state = nullptr;
@@ -126,16 +133,20 @@ float environmentFloat(const wchar_t* name, float fallback) {
 void configureMovementProof() {
     if (state->testMode || !environmentEnabled(L"ZELRIM_MOVEMENT_PROOF")) return;
     std::uint32_t base = 0;
-    if (!environmentUnsigned(L"ZELRIM_PROXY_BASE_FORM_ID", base) || !base) {
-        log("Zelrim movement proof requested without ZELRIM_PROXY_BASE_FORM_ID; disabled");
+    std::uint32_t cell = 0;
+    if (!environmentUnsigned(L"ZELRIM_PROXY_BASE_FORM_ID", base) || !base ||
+        !environmentUnsigned(L"ZELRIM_EXPECTED_CELL_FORM_ID", cell) || !cell) {
+        log("Zelrim movement proof requires proxy base and expected cell form IDs; disabled");
         return;
     }
     const auto scale = environmentFloat(L"ZELRIM_MOVEMENT_SCALE", 1.0f);
     const auto yawSign = environmentFloat(L"ZELRIM_MOVEMENT_YAW_SIGN", 1.0f);
     const auto maxDelta = environmentFloat(L"ZELRIM_MOVEMENT_MAX_DELTA", 1000.0f);
-    state->movementAuthority = zelrim::skse::MovementAuthority({ scale, yawSign, maxDelta });
+    const auto visualOffsetX = environmentFloat(L"ZELRIM_PROXY_OFFSET_X", 0.0f);
+    state->movementAuthority = zelrim::skse::MovementAuthority({ scale, yawSign, maxDelta, visualOffsetX });
     state->movementProofEnabled = true;
     state->proxyBaseFormId = base;
+    state->expectedCellFormId = cell;
     log("Zelrim movement proof enabled for disposable no-save validation");
 }
 void retireProxy(const char* reason, PlayerCharacter* player) noexcept {
@@ -145,7 +156,7 @@ void retireProxy(const char* reason, PlayerCharacter* player) noexcept {
         position.z -= 10000.0f;
         NiPoint3 rotation = player->rot;
         rotation.x = rotation.y = rotation.z = 0.0f;
-        UInt32 nullHandle = 0;
+        UInt32 nullHandle = *g_invalidRefHandle;
         MoveRefrToPosition(state->proxy, &nullHandle, player->parentCell,
             player->parentCell->worldSpace, &position, &rotation);
     }
@@ -155,23 +166,36 @@ void retireProxy(const char* reason, PlayerCharacter* player) noexcept {
     log(message);
     state->proxy = nullptr;
     state->proxyRuntimeFormId = 0;
+    state->proxy3dReported = false;
+    state->appliedPoseLogged = false;
+    state->lastMovementLogMs = 0;
 }
 bool ensureProxy(PlayerCharacter* player) noexcept {
     if (state->proxy) return true;
-    if (!player || !player->parentCell) return false;
+    if (!player || !player->parentCell || player->parentCell->formID != state->expectedCellFormId) return false;
     auto* base = LookupFormByID(state->proxyBaseFormId);
     if (!base || base->formType == kFormType_NPC || base->formType == kFormType_Character) {
         log("Zelrim movement proof rejected missing/actor proxy base form");
         state->movementProofEnabled = false;
         return false;
     }
-    state->proxy = PlaceAtMe_Native(nullptr, 0, player, base, 1, false, false);
+    auto* vm = *g_skyrimVM;
+    auto* registry = vm ? vm->GetClassRegistry() : nullptr;
+    if (!registry) {
+        log("Zelrim movement proof could not access Papyrus class registry");
+        state->movementProofEnabled = false;
+        return false;
+    }
+    state->proxy = PlaceAtMe_Native(registry, 0, player, base, 1, false, false);
     if (!state->proxy) {
         log("Zelrim movement proof could not create proxy");
         state->movementProofEnabled = false;
         return false;
     }
     state->proxyRuntimeFormId = state->proxy->formID;
+    state->proxy3dReported = false;
+    state->appliedPoseLogged = false;
+    state->lastMovementLogMs = 0;
     char message[256];
     std::snprintf(message, sizeof(message),
         "Zelrim movement proxy created base=0x%08lx form=0x%08lx cell=0x%08lx",
@@ -190,17 +214,25 @@ void applyMovement(const zelrim::skse::MovementDecision& decision, PlayerCharact
     if (!ensureProxy(player)) return;
     NiPoint3 position{ decision.positionX, decision.positionY, decision.positionZ };
     NiPoint3 rotation{ 0.0f, 0.0f, decision.rotationZ };
-    UInt32 nullHandle = 0;
+    UInt32 nullHandle = *g_invalidRefHandle;
     MoveRefrToPosition(state->proxy, &nullHandle, player->parentCell,
         player->parentCell->worldSpace, &position, &rotation);
-    if (decision.action == zelrim::skse::MovementAction::Calibrate || decision.linkSequence % 60 == 0) {
-        char message[320];
+    const auto now = GetTickCount64();
+    if (decision.action == zelrim::skse::MovementAction::Calibrate ||
+        !state->appliedPoseLogged || now - state->lastMovementLogMs >= 1000) {
+        char message[480];
         std::snprintf(message, sizeof(message),
-            "Zelrim movement=%s proxy=0x%08lx linkSequence=%llu pos=(%.3f,%.3f,%.3f) yaw=%.6f",
+            "Zelrim movement=%s proxy=0x%08lx linkSequence=%llu target=(%.3f,%.3f,%.3f) yaw=%.6f "
+            "actual=(%.3f,%.3f,%.3f) yaw=%.6f loaded3d=%u",
             decision.action == zelrim::skse::MovementAction::Calibrate ? "calibrated" : "applied",
             static_cast<unsigned long>(state->proxyRuntimeFormId),
-            static_cast<unsigned long long>(decision.linkSequence), position.x, position.y, position.z, rotation.z);
+            static_cast<unsigned long long>(decision.linkSequence), position.x, position.y, position.z, rotation.z,
+            state->proxy->pos.x, state->proxy->pos.y, state->proxy->pos.z, state->proxy->rot.z,
+            state->proxy->loadedState && state->proxy->loadedState->node ? 1u : 0u);
         log(message);
+        state->lastMovementLogMs = now;
+        if (decision.action == zelrim::skse::MovementAction::Apply)
+            state->appliedPoseLogged = true;
     }
 }
 class HeartbeatTask final : public TaskDelegate {
@@ -232,8 +264,25 @@ public:
                     state->lastWorldPublicationMs = captureNow;
                 }
                 status = state->bridge->tick(state->movementProofEnabled ? 0 : 100);
-                if (state->movementProofEnabled && status.peer != zelrim::PeerState::Unavailable)
-                    applyMovement(state->movementAuthority.update(status), player);
+                if (state->movementProofEnabled && status.peer != zelrim::PeerState::Unavailable) {
+                    if (source.cellPresent && source.cellFormId != state->expectedCellFormId) {
+                        state->movementAuthority.reset(zelrim::skse::MovementResetReason::SpatialContextChanged);
+                        retireProxy("outside-test-cell", player);
+                        state->movementProofEnabled = false;
+                        log("Zelrim movement proof disabled outside configured test cell");
+                    } else {
+                        applyMovement(state->movementAuthority.update(status), player);
+                        if (state->proxy && !state->proxy3dReported &&
+                            state->proxy->loadedState && state->proxy->loadedState->node) {
+                            char message[128];
+                            std::snprintf(message, sizeof(message),
+                                "Zelrim movement proxy loaded3d form=0x%08lx",
+                                static_cast<unsigned long>(state->proxyRuntimeFormId));
+                            log(message);
+                            state->proxy3dReported = true;
+                        }
+                    }
+                }
             }
             if (!state->reported || status.peer != state->previous || status.snapshot.ootPid != state->previousPid) {
                 char message[256];

@@ -1,6 +1,7 @@
 # Milestone 4 plan: movement authority proof
 
-Status: implemented on 2026-10-01; live two-game validation remains. See
+Status: implemented on 2026-10-01; partial live two-game validation on
+2026-10-02, with the completion gate still open. See
 [the implementation and evidence record](milestone-04.md). This is a feasibility
 experiment, not a general Skyrim traversal system.
 
@@ -33,7 +34,8 @@ Those facts justify a pose follower. They do not justify a universal transform.
 For this proof the transform is local and resettable:
 
 * The first usable OOT sample and current Skyrim player pose define paired
-  origins. Absolute coordinates are never equated.
+  origins, with an optional fixed Skyrim X offset to keep the test object in
+  view beside the player. Absolute coordinates are never equated.
 * The candidate basis is OOT `(x, y, z)` to Skyrim `(x, z, y)`, with a configured
   scalar number of Skyrim units per OOT unit. OOT `y` and Skyrim `z` are treated
   as the candidate vertical axes only for the controlled test.
@@ -50,7 +52,7 @@ The feature is off unless an explicit test configuration enables it and names a
 vanilla base-form ID. On a playable, unpaused Skyrim game-thread task with a
 fresh usable OOT sample, the plugin places exactly one **nonpersistent** reference
 at the Skyrim player through the pinned native placement function. The returned
-reference handle and runtime form ID are its identity; the plugin never adopts
+reference pointer and runtime form ID are its identity; the plugin never adopts
 or moves an arbitrary pre-existing reference.
 
 The configured base must be a simple non-actor visual object. Actors and objects
@@ -62,9 +64,10 @@ pathfinding, forces, or controller input are authored.
 The proxy is owned only for the current process/session and is never force-persistent.
 On disable, load, cell/worldspace change, stale/invalid OOT data, peer loss, or
 shutdown, pose application stops immediately and the owned reference is retired.
-Runtime validation uses a disposable save and exits without saving. This is the
-hard safety boundary because the pinned public API does not establish a verified
-general-purpose delete call. No user save is opened for the experiment.
+Runtime validation loads an existing save only as a disposable starting point
+and exits without saving. This is the hard safety boundary because the pinned
+public API does not establish a verified general-purpose delete call. Zelrim
+does not create a test save or write to a user save.
 
 ## Timing and failure behavior
 

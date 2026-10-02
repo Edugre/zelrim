@@ -7,6 +7,7 @@ struct MovementProofConfig {
     float scale = 1.0f;
     float yawSign = 1.0f;
     float maxSampleDelta = 1000.0f;
+    float visualOffsetX = 0.0f; // Skyrim units, keeps the test proxy beside the player
 };
 enum class MovementAction { None, Calibrate, Apply, Reset };
 enum class MovementResetReason {
@@ -35,6 +36,7 @@ private:
     std::uint32_t cellId_ = 0, worldspaceId_ = 0;
     float ootOriginX_ = 0, ootOriginY_ = 0, ootOriginZ_ = 0;
     float previousOotX_ = 0, previousOotY_ = 0, previousOotZ_ = 0;
+    std::int16_t previousYaw_ = 0;
     float skyrimOriginX_ = 0, skyrimOriginY_ = 0, skyrimOriginZ_ = 0, skyrimOriginYaw_ = 0;
 };
 const char* movementResetName(MovementResetReason reason) noexcept;
