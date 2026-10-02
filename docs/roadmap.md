@@ -1,6 +1,6 @@
 # Zelrim roadmap and context for future chats
 
-Updated: 2026-10-01. This is the proposed project sequence, not authorization to
+Updated: 2026-10-02. This is the proposed project sequence, not authorization to
 implement every milestone. Plan and implement one milestone at a time; revise
 later milestones as experiments establish what works.
 
@@ -43,6 +43,13 @@ Read these documents for implementation details and observed limitations:
 evidence from the remaining in-game matrix. The milestones below continue numbering from the existing milestone files;
 the earlier conversational list of next steps was not a milestone numbering scheme.
 
+**Milestone 4's narrow movement-authority proof is complete.** The
+[implementation and controlled runtime record](milestone-04.md) and
+[plan](milestone-04-plan.md) document OOT-driven proxy movement, coordinate/yaw
+readback, pause/stale/cell-change and process-restart safety. This supports
+starting the milestone-5 *experiment*, not movement against arbitrary Skyrim
+terrain or a general Link presentation system.
+
 ## Milestone 2: Read-only Link telemetry
 
 Implementation completed 2026-10-01; see `milestone-02.md`.
@@ -72,6 +79,10 @@ cell changes and coordinate discontinuities. This step observes the world; it
 does not move actors or exchange collision geometry yet.
 
 ## Milestone 4: Movement authority proof
+
+Narrow feasibility gate verified 2026-10-02 in a disposable, no-save run; see
+`milestone-04.md`. Transient proxy 3D unloading during some moves and precise
+visual latency remain limitations for later investigation.
 
 In an isolated Skyrim test area, let OOT drive a minimal proxy using OOT's own
 movement simulation. Establish update timing, authority, pause behavior,
